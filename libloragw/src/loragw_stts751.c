@@ -66,6 +66,7 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 
 #define STTS751_0_PROD_ID       0x00
 #define STTS751_1_PROD_ID       0x01
+#define TMP_102_PROD_ID         0x06
 #define ST_MAN_ID               0x53
 
 /* -------------------------------------------------------------------------- */
@@ -102,6 +103,10 @@ int stts751_configure(int i2c_fd, uint8_t i2c_addr) {
         case STTS751_1_PROD_ID:
             DEBUG_MSG("INFO: Product ID: STTS751-1\n");
             break;
+        case TMP_102_PROD_ID:
+            DEBUG_MSG("INFO: Product ID: TMP-102\n");
+            // No further configuration is required.
+            return LGW_I2C_SUCCESS;
         default:
             printf("ERROR: Product ID: UNKNOWN\n");
             return LGW_I2C_ERROR;

@@ -23,8 +23,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
     #define _XOPEN_SOURCE 500
 #endif
 
-#define _GNU_SOURCE     /* needed for qsort_r to be defined */
-#include <stdlib.h>     /* qsort_r */
+#define _GNU_SOURCE
+#include <stdlib.h>
 
 #include <stdint.h>     /* C99 types */
 #include <stdbool.h>    /* bool type */
@@ -209,6 +209,9 @@ static uint8_t ts_addr = 0xFF;
 /* I2C AD5338 handles */
 static int     ad_fd = -1;
 
+/* I2C device */
+static char i2c_device[50];
+
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
 
@@ -297,19 +300,12 @@ static int remove_pkt(struct lgw_pkt_rx_s * p, uint8_t * nb_pkt, uint8_t pkt_ind
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-int compare_pkt_tmst(const void *a, const void *b, void *arg)
+int compare_pkt_tmst(const void *a, const void *b)
 {
-    struct lgw_pkt_rx_s *p = (struct lgw_pkt_rx_s *)a;
-    struct lgw_pkt_rx_s *q = (struct lgw_pkt_rx_s *)b;
-    int *counter = (int *)arg;
     int p_count, q_count;
 
-    p_count = p->count_us;
-    q_count = q->count_us;
-
-    if (p_count > q_count) {
-        *counter = *counter + 1;
-    }
+    p_count = ((struct lgw_pkt_rx_s *)a)->count_us;
+    q_count = ((struct lgw_pkt_rx_s *)b)->count_us;
 
     return (p_count - q_count);
 }
@@ -323,7 +319,6 @@ static int merge_packets(struct lgw_pkt_rx_s * p, uint8_t * nb_pkt) {
     int pkt_idx;
 #endif
     bool dup_restart = false;
-    int counter_qsort_swap = 0;
 
     /* Check input parameters */
     CHECK_NULL(p);
@@ -417,8 +412,8 @@ static int merge_packets(struct lgw_pkt_rx_s * p, uint8_t * nb_pkt) {
     }
 
     /* Sort the packet array by ascending counter_us value */
-    qsort_r(p, cpt, sizeof(p[0]), compare_pkt_tmst, &counter_qsort_swap);
-    DEBUG_PRINTF("%d elements swapped during sorting...\n", counter_qsort_swap);
+    qsort(p, cpt, sizeof(p[0]), compare_pkt_tmst);
+    DEBUG_PRINTF("%d elements sorted...\n");
 
     /* --------------------------------------------- */
     /* ---------- For Debug only - START ----------- */
@@ -447,6 +442,22 @@ static int merge_packets(struct lgw_pkt_rx_s * p, uint8_t * nb_pkt) {
 
 /* -------------------------------------------------------------------------- */
 /* --- PUBLIC FUNCTIONS DEFINITION ------------------------------------------ */
+
+int lgw_i2c_set_path(const char *path) {
+    if (path) {
+        strcpy(i2c_device, path);
+        DEBUG_PRINTF("Setting I2C device: %s\n", i2c_device);
+        return LGW_I2C_SUCCESS;
+    }
+    else {
+        return LGW_I2C_ERROR;
+    }
+}
+
+int lgw_i2c_set_temp_sensor_addr(uint8_t addr) {
+    ts_addr = addr;
+    return LGW_I2C_SUCCESS;
+}
 
 int lgw_board_setconf(struct lgw_conf_board_s * conf) {
     CHECK_NULL(conf);
@@ -1093,10 +1104,8 @@ int lgw_start(void) {
     dbg_init_random();
 
     if (CONTEXT_COM_TYPE == LGW_COM_SPI) {
-        /* Find the temperature sensor on the known supported ports */
-        for (i = 0; i < (int)(sizeof I2C_PORT_TEMP_SENSOR); i++) {
-            ts_addr = I2C_PORT_TEMP_SENSOR[i];
-            err = i2c_linuxdev_open(I2C_DEVICE, ts_addr, &ts_fd);
+        if (ts_addr != 0xFF) {
+            err = i2c_linuxdev_open(i2c_device, ts_addr, &ts_fd);
             if (err != LGW_I2C_SUCCESS) {
                 printf("ERROR: failed to open I2C for temperature sensor on port 0x%02X\n", ts_addr);
                 return LGW_HAL_ERROR;
@@ -1107,19 +1116,12 @@ int lgw_start(void) {
                 printf("INFO: no temperature sensor found on port 0x%02X\n", ts_addr);
                 i2c_linuxdev_close(ts_fd);
                 ts_fd = -1;
-            } else {
-                printf("INFO: found temperature sensor on port 0x%02X\n", ts_addr);
-                break;
             }
-        }
-        if (i == sizeof I2C_PORT_TEMP_SENSOR) {
-            printf("ERROR: no temperature sensor found.\n");
-            return LGW_HAL_ERROR;
         }
 
         /* Configure ADC AD338R for full duplex (CN490 reference design) */
         if (CONTEXT_BOARD.full_duplex == true) {
-            err = i2c_linuxdev_open(I2C_DEVICE, I2C_PORT_DAC_AD5338R, &ad_fd);
+            err = i2c_linuxdev_open(i2c_device, I2C_PORT_DAC_AD5338R, &ad_fd);
             if (err != LGW_I2C_SUCCESS) {
                 printf("ERROR: failed to open I2C for ad5338r\n");
                 return LGW_HAL_ERROR;
@@ -1222,11 +1224,13 @@ int lgw_stop(void) {
     }
 
     if (CONTEXT_COM_TYPE == LGW_COM_SPI) {
+        if (ts_fd != -1) {
         DEBUG_MSG("INFO: Closing I2C for temperature sensor\n");
         x = i2c_linuxdev_close(ts_fd);
         if (x != 0) {
             printf("ERROR: failed to close I2C temperature sensor device (err=%i)\n", x);
             err = LGW_HAL_ERROR;
+        }
         }
 
         if (CONTEXT_BOARD.full_duplex == true) {
@@ -1287,10 +1291,12 @@ int lgw_receive(uint8_t max_pkt, struct lgw_pkt_rx_s *pkt_data) {
     }
 
     /* Apply RSSI temperature compensation */
+    if (ts_fd != -1) {
     res = lgw_get_temperature(&current_temperature);
     if (res != LGW_I2C_SUCCESS) {
         printf("ERROR: failed to get current temperature\n");
         return LGW_HAL_ERROR;
+        }
     }
 
     /* Iterate on the RX buffer to get parsed packets */
